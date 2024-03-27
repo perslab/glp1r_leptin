@@ -1,0 +1,248 @@
+---
+title: "splsda-analysis"
+output: html_notebook
+---
+
+
+# Load data
+```{r}
+targets::tar_load(integrated_arc_diet)
+DefaultAssay(integrated_arc_diet) <- "RNA"
+targets::tar_load(arc_ob_db_final)
+DefaultAssay(arc_ob_db_final) <- "RNA"
+arc_test <- subset(arc_ob_db_final, subset = seurat_clusters %in% c(1,10, 25) & time %in% c(3,6,24))
+
+camp <- readRDS("/projects/dylan/leptin_paper/data/Arc_Neurons_33_Clusters.rds")
+DefaultAssay(camp) <- "RNA"
+
+camp <- process_seurat(camp, method="qpoisson", cluster=F)
+integrated_arc_diet <- process_seurat(camp, method="qpoisson", cluster=F)
+arc_test <- process_seurat(arc_test, method="qpoisson", cluster=F)
+```
+
+# Prepare object
+```{r}
+lepip_1hr <- subset(arc_ob_db_final, subset = time == 1 & seurat_clusters %in% c(1, 10, 25))
+lepip_1hr[["seurat_clusters"]] <- factor(lepip_1hr$seurat_clusters)
+levels(lepip_1hr$seurat_clusters) <- c("Agrp","Glp1r","Pomc")
+lepip_1hr[["group"]] <- paste0(lepip_1hr$geno, lepip_1hr$treatment, lepip_1hr$seurat_clusters)
+out <- vfold_cv(data.frame(Cells(lepip_1hr)), v = 5, repeats = 2)
+```
+
+```{r}
+library(rsample)
+library(pROC)
+
+training_sets <- purrr::map(out$splits, function(x) {
+  
+  lepip_train <- subset(lepip_1hr, cells = colnames(lepip_1hr)[x$in_id])
+  min_cells <- min(table(lepip_train$group))
+  equalnums <- as.character(unlist(tapply(colnames(lepip_train), lepip_train$group, function(x) sample(x, min_cells))))
+  lepip_train <- process_seurat(subset(lepip_train, cells = equalnums), method="qpoisson", cluster=F, nfeats = 5000, features = "^Gm|Rik$")
+  return(lepip_train)
+  
+})
+
+testing_sets <- purrr::map(out$splits, function(x) {
+  
+  lepip_test <- subset(lepip_1hr, cells = colnames(lepip_1hr)[-x$in_id])
+  lepip_test <- process_seurat(lepip_test, method="qpoisson", cluster=F, nfeats = 5000)
+  return(lepip_test)
+  
+})
+```
+
+# Train Models
+```{r}
+models <- purrr::map2(training_sets, testing_sets, function(x,y) {
+  features <- intersect(VariableFeatures(x), VariableFeatures(y))
+  features <- intersect(features, rownames(camp@assays$SCT@data))
+  print(length(features))
+  train_x <- t(x@assays$RNA@data[features,])
+  train_y <- factor(x$treatment)
+  final.splsda <- splsda(X = train_x, Y = train_y,  ncomp = 1, keepX = 100)
+  return(final.splsda)
+})
+```
+
+# Identify important features
+```{r}
+purrr::map_dfr(models, ~selectVar(.x)$value %>%  rownames_to_column("gene"), .id="fold") %>% 
+  group_by(gene) %>% 
+  mutate(count = n()) %>% 
+  group_by(gene) %>% 
+  summarise(mean = mean(value.var), sd = sd(value.var), count = mean(count)/10) %>% 
+  arrange(desc(count), mean)
+```
+```{r}
+VlnPlot(lepip_test, "Abca1", split.by = "treatment", group.by = "seurat_clusters") +
+  facet_wrap(~lepip_test$geno)
+```
+
+# predict on remaining leptin treated data
+```{r}
+preds_lepip <- purrr::map2(testing_sets, models, function(x,y) {
+  
+  features <- colnames(y$X)
+  test_x <- t(x@assays$SCT@data[features,])
+  predict.splsda <- predict(y, newdata = test_x,  dist = "centroids.dist")
+  return(predict.splsda)
+  
+})
+
+auc_1hr <- purrr::map2_dfr(preds_lepip,testing_sets, function(x,y) {
+  data.frame(comp1 = x$predict[,1,1]) %>%  bind_cols(true = y[[]])
+  }, .id="fold") %>% 
+  group_by(seurat_clusters, geno, fold, time) %>% 
+  yardstick::roc_auc(.,  factor(treatment), comp1) 
+
+auc_1hr %>% 
+  ggplot() +
+  aes(seurat_clusters, .estimate, fill=geno) +
+  geom_boxplot()
+```
+
+```{r fig.height=2, fig.width=6}
+preds_over_time <- purrr::map(models, function(x) {
+  test_x <- t(arc_test@assays$SCT@data[colnames(x$X),])
+  predict.splsda <- predict(x, newdata = test_x,  dist = "centroids.dist")
+  return(predict.splsda)
+})
+
+purrr::map_dfr(preds_over_time, function(x) {
+  data.frame(comp1 = x$predict[,1,1]) %>%  bind_cols(true = arc_test[[]])
+  }, .id="fold") %>%
+  mutate(seurat_clusters = case_when(seurat_clusters==1~"Agrp",
+                                     seurat_clusters==10~"Glp1r",
+                                     seurat_clusters==25~"Pomc",
+                                     TRUE~seurat_clusters)) %>% 
+  group_by(seurat_clusters, geno, fold, time) %>% 
+  yardstick::roc_auc(.,  factor(treatment), comp1) %>% 
+  bind_rows(auc_1hr) %>%
+  ggplot() +
+  aes(x=factor(time, c(1, 3,6,24)), y = .estimate, color=geno, group = geno) +
+  stat_summary(geom = "point") +
+  stat_summary(geom = "errorbar", width=0.1) +
+  stat_summary(geom="line") +
+  facet_wrap(~seurat_clusters) +
+  geom_hline(yintercept=0.5, linetype=2)
+```
+
+# Evaluate on external datasets
+```{r}
+evaluate_model <- function(model, dataset, assay) {
+  features <- colnames(model$X)
+  newdata <- dataset@assays[[assay]]@data
+  newdata <- t(newdata[features,])
+  predict.splsda <- predict(model, newdata = newdata,  dist = "centroids.dist")
+  return(predict.splsda)
+}
+
+append_model_data <- function(preds, dataset) {
+  dataset[["evaluate"]] <- Idents(dataset)
+  data.frame(comp1 = preds$predict[,1,1]) %>% 
+    bind_cols(dataset[[]])
+}
+
+
+camp_preds <- lapply(models, function(x) evaluate_model(x, dataset = camp, assay = "SCT")) 
+diet_preds <- lapply(models, function(x) evaluate_model(x, integrated_arc_diet, "SCT"))
+```
+
+```{r}
+camp_diet_auc <- map_dfr(camp_preds,~append_model_data(.x, camp), .id="fold") %>% 
+  janitor::clean_names() %>% 
+  dplyr::filter(x5_diet %in% c("Chow","HFD")) %>% 
+  mutate(x5_diet = factor(x5_diet, c("HFD","Chow"))) %>% 
+  filter(evaluate %in% c("Agrp/Gm8773","Pomc/Anxa2","Trh/Cxcl12","Agrp/Sst")) %>% 
+  mutate(evaluate = ifelse(grepl("Agrp", evaluate), "Agrp", as.character(evaluate))) %>% 
+  group_by(evaluate, fold) 
+  
+camp_diet_auc %>% 
+  yardstick::roc_curve(factor(x5_diet),comp1) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw() + 
+  facet_wrap(~evaluate)
+```
+
+```{r}
+camp_fast_auc <- map_dfr(camp_preds,~append_model_data(.x, camp), .id="fold") %>% 
+  janitor::clean_names() %>% 
+  dplyr::filter(x5_diet %in% c("Chow","Fast")) %>% 
+  mutate(x5_diet = factor(x5_diet)) %>% 
+  filter(evaluate %in% c("Agrp/Gm8773","Pomc/Anxa2","Trh/Cxcl12","Agrp/Sst")) %>% 
+  mutate(evaluate = ifelse(grepl("Agrp", evaluate), "Agrp", as.character(evaluate))) %>% 
+  group_by(evaluate, fold) 
+
+camp_fast_auc %>% 
+  yardstick::roc_curve(factor(x5_diet),comp1) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw() + 
+  facet_wrap(~evaluate)
+```
+
+```{r}
+hfd_auc <- map_dfr(diet_preds, ~append_model_data(.x, integrated_arc_diet), .id="fold") %>% 
+  janitor::clean_names() %>% 
+  dplyr::filter(treatment %in% c("Chow","HFD")) %>% 
+  mutate(x5_diet = factor(treatment, c("HFD","Chow"))) %>% 
+  filter(internal_labs %in% c("Agrp","Pomc/Anxa2","Trh/Cxcl12")) %>% 
+  group_by(internal_labs, fold)
+
+hfd_auc %>% 
+  yardstick::roc_curve(factor(x5_diet),comp1) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw() +
+  facet_wrap(~internal_labs)
+```
+
+```{r}
+fasting_auc <- map_dfr(diet_preds, ~append_model_data(.x, integrated_arc_diet), .id="fold") %>% 
+  janitor::clean_names() %>% 
+  dplyr::filter(treatment %in% c("Chow","Fast")) %>% 
+  mutate(x5_diet = factor(treatment)) %>% 
+  filter(internal_labs %in% c("Agrp","Pomc/Anxa2","Trh/Cxcl12")) %>% 
+  group_by(internal_labs, fold) 
+
+fasting_auc %>% 
+  yardstick::roc_curve(factor(x5_diet),comp1) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw() +
+  facet_wrap(~internal_labs)
+```
+
+```{r fig.width=8, fig.height=4}
+p1 <- fasting_auc %>% yardstick::roc_auc(., factor(treatment), comp1) %>% 
+  bind_rows(., hfd_auc %>% yardstick::roc_auc(., factor(treatment, levels = c("HFD", "Chow")), comp1), .id="diet") %>% 
+  ggplot() +
+  aes(x=internal_labs, y=.estimate, fill=diet) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0.5, lty=2) +
+  facet_wrap(~internal_labs, scales="free_x") +
+  labs(x=NULL, y="AUC") +
+  theme_classic()
+
+p2 <- camp_fast_auc %>% yardstick::roc_auc(., factor(x5_diet), comp1) %>% 
+  bind_rows(., camp_diet_auc %>% yardstick::roc_auc(., factor(x5_diet, levels = c("HFD", "Chow")), comp1), .id="diet") %>% 
+  ggplot() +
+  aes(x=evaluate, y=.estimate, fill=diet) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0.5, lty=2) +
+  facet_wrap(~evaluate, scales="free_x") +
+  labs(x=NULL, y="AUC") +
+  theme_classic()
+
+p1+p2
+```
