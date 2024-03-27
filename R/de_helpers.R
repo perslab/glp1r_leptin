@@ -1,9 +1,7 @@
-#' .. content for \description{} (no empty lines) ..
-#'
-#' .. content for \details{} ..
+#' Create edgeR object
 #'
 #' @title
-
+#' @import edgeR
 #' @return
 #' @author dylanmr
 #' @export
@@ -41,12 +39,12 @@ edger_prep <- function(seur, trt_group = "geno", lib.size = 1e4,
   meta <- seur[[]] %>% distinct(hash.mcl.ID, .keep_all = T) 
   meta <- meta[match(y$samples$sample, meta$hash.mcl.ID),]
   y$samples <- bind_cols(meta, y$samples)
-
+  
   keep.genes <- filterByExpr(y, group=y$samples$cluster, min.count = min.count, min.total.count = min.total.count)
   table(keep.genes)
   y <- y[keep.genes, , keep=FALSE]
   y <- normLibSizes(y)
   
   return(y)
-
+  
 }

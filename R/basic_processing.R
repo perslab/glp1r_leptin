@@ -1,10 +1,69 @@
-#' .. content for \description{} (no empty lines) ..
+#' Create Seurat object from 10X h5 output files and 
+#' cellbender h5 output files
+#' @title generate seurat object
+#' @return seurat object
+#' @import Seurat scCustomize
+#' @author dylanmr
+#' @export
+
+gen_seurat <- function(denoisedfile, rawpath, pattern = "_out.h5", min.cells=10, min.features=1000, cellbender = T) {
+  
+  name <- gsub(pattern,"",gsub(".*/","", denoisedfile))
+  raw_file <- paste0(rawpath, "/", name, "_raw_feature_bc_matrix.h5")
+  rawmat <- Read10X_h5(raw_file)
+  colnames(rawmat) <- gsub("-1", replacement = "", colnames(rawmat))
+  
+  if(isTRUE(cellbender)){
+    cellbender_mat <- Read_CellBender_h5_Mat(file_name = denoisedfile)
+    colnames(cellbender_mat) <- gsub("-1", replacement = "", colnames(cellbender_mat))
+    seur <- Create_CellBender_Merged_Seurat(raw_cell_bender_matrix = cellbender_mat, 
+                                                   raw_counts_matrix = rawmat,
+                                                   raw_assay_name = "RAW", min_cells = min.cells, 
+                                                   min_features = min.features, project = as.character(name))
+    seur <- Add_CellBender_Diff(seurat_object = seur, raw_assay_name = "RAW", cell_bender_assay_name = "RNA")
+  } else {
+    seur <- CreateSeuratObject(rawmat, min.cells = min.cells, min.features = min.feature, project = as.character(name))
+  }
+
+  return(seur)
+  
+}
+
+#' Add HTO matrix to seurat object
+#' Specifically reads in format from kb count (https://www.kallistobus.tools/kb_usage/kb_count/)
+#'
+#' @title Add HTO
+#' @importFrom BUSpaRse read_count_output
+#' @return seurat object with HTO matrix
+#' @author dylanmr
+#' @export
+add_hto <- function(seur, path = "sc_preprocessing/hto_counts/") {
+  
+  hpool <- unique(seur$orig.ident)
+  print(hpool)
+  lane <- paste0(here::here(path), "/", hpool, "/", "counts_unfiltered")
+  # Read HTO mat
+  hto <- BUSpaRse::read_count_output(
+    dir = lane, 
+    name = "cells_x_features", 
+    tcc = FALSE
+  )
+  
+  bc_overlap <- intersect(colnames(hto), colnames(seur))
+  seur <- subset(seur, cells = bc_overlap)
+  seur[["HTO"]] <- CreateAssayObject(counts = hto[,bc_overlap])
+  return(seur)
+  
+}
+
+#' Functions for assigning cells to hash tags
 #'
 #' .. content for \details{} ..
 #'
 #' @title
 
 #' @return
+#' @import assertthat mclust diptest
 #' @author dylanmr
 #' @export
 
@@ -143,3 +202,46 @@ HTODemux_mcl.visualization <- function(object, assay = "HTO", q_l = 1, q_h = 0.0
          width = 10,
          height = 12)
 }
+
+#' Add excel file to existing seurat object
+#' @title add_metadata
+#' @param joinby
+#' @return seurat object
+#' @author dylanmr
+#' @export
+
+add_metadata <- function(obj, file = here::here("sc_preprocessing/sequenced_mice_data_swapped_w_all.xlsx"), joinby = "hash") {
+  
+  data <- readxl::read_xlsx(file)  %>%  janitor::clean_names() 
+  add_data <- left_join(obj[["hash.mcl.ID"]], data, by = c("hash.mcl.ID" = {{ joinby }})) 
+  row.names(add_data) <- row.names(obj[[]])
+  obj <- AddMetaData(obj, metadata = add_data)
+  obj <- subset(obj, cells = colnames(obj)[which(!is.na(obj$dataset))])
+  return(obj)
+  
+}
+
+#' Assign cell annotations
+#' @title CellAnnotator
+#' @return seurat object with updated metadata column
+#' @author dylanmr
+#' @import CellAnnotatoR
+#' @export
+
+classify_cells <- function(obj, column_name = "annotation",
+                           path = here::here("cell_markers/coarse_markers.txt"), 
+                           clustering_res = clustering_res,
+                           clustering_dims = clustering_dims) {
+  
+  obj <- process_seurat(obj, method = "log", res = clustering_res, dims = clustering_dims) 
+  cm <- obj@assays$RNA@counts
+  clusters <- setNames(obj@meta.data$seurat_clusters, rownames(obj@meta.data))
+  clf_data <- getClassificationData(cm, markers = path)
+  obj[[column_name]] <- assignCellsByScores(graph = NULL, clf_data, clusters=clusters)$annotation$l1
+  return(obj)
+  
+}
+
+
+
+
