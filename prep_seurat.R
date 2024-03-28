@@ -52,8 +52,9 @@ seurat_processing <-
         seurat_objects %>%
           remove_doublets() %>%
           add_metadata(obj = ., file = metadata, joinby = "hash") %>%
-          classify_cells(obj = ., path = marker_file, clustering_res = clustering_res, clustering_dims = clustering_dims) %>%
-          run_gex_qc(., times=1, batch = "ann_neuron") %>%
+          classify_cells(obj = ., path = marker_file, clustering_res = clustering_res,
+                         clustering_dims = clustering_dims, column_name = "l1_neur") %>%
+          run_gex_qc(., times=1, batch = "l1_neur") %>%
           process_seurat(., method = "log", res = clustering_res, dims = clustering_dims)
       },
       pattern = map(seurat_objects),

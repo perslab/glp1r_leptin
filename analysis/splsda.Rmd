@@ -6,6 +6,8 @@ output: html_notebook
 
 # Load data
 ```{r}
+set.seed(0426)
+
 targets::tar_load(integrated_arc_diet)
 DefaultAssay(integrated_arc_diet) <- "RNA"
 targets::tar_load(arc_ob_db_final)

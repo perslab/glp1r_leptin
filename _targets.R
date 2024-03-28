@@ -33,5 +33,6 @@ options(clustermq.scheduler = "multicore",
 
 
 list(
-  seurat_processing
+  seurat_processing,
+  integrate_objects
   )
