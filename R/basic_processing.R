@@ -242,6 +242,284 @@ classify_cells <- function(obj, column_name = "annotation",
   
 }
 
+#' process seurat objects
+#'
+#' @title
+#' @param obj seurat or list of seurat objects
+#' @param method log, glm, qpoisson, or integrate
+#' @param res numeric value indicating resolution of clustering
+#' @param features regex for features to remove
+#' @param dims number of dimensions to use for umap
+#' @param batch character matching to metadata to integrate on. if obj is a list will 
+#' integrate by list entry
+#' @param return_model logical, return umap model. useful for projection
+#' @param cluster logical, perform RunUMAP, FindClusters, FindNeighbors
+#' @param type character, 
+#' @return
+#' @author dylanmr
+#' @export
+
+process_seurat <- function(obj, method, ref_datasets = NULL, k.anchor=5,k.weight=100,
+                           res=NULL, features=NULL, dims=NULL, 
+                           batch=NULL, return_model = FALSE, cluster=TRUE, 
+                           nfeats = 2000) {
+  
+  if (is(obj, "SingleCellExperiment")) {
+    obj <- CreateSeuratObject(counts = counts(obj))
+  }
+  
+  if(!is.null(features)) {
+    features_to_remove <- rownames(obj)[grepl(features, rownames(obj))]
+    obj <- subset(obj, features = setdiff(rownames(obj), features_to_remove))
+  }
+  
+  obj <- switch(
+    method,
+    integrate = process_integrate(obj, batch, nfeats, ref_datasets, k.anchor, k.weight),
+    log = process_log(obj, nfeats, batch),
+    glm = process_glm(obj, nfeats, batch),
+    qpoisson = process_qpoisson(obj, nfeats, batch),
+    stop(paste("Unknown method:", method))
+  )
+  
+  if (cluster) {
+    obj <- cluster_obj(obj, dims, return_model, res)
+  }
+  
+  return(obj)
+}
+
+process_integrate <- function(obj, batch, nfeats, ref_datasets, k.anchor, k.weight) {
+  if(is.list(obj)) {
+    obj_list <- obj
+  } else {
+    DefaultAssay(obj) <- "RNA"
+    obj_list <- SplitObject(obj, split.by = batch)
+  }
+  
+  obj_list <- lapply(X = obj_list, FUN = function(x) {
+    if(sum("SCT" %in% names(x@assays))>0) {
+      x[["SCT"]] <- NULL
+    }
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = nfeats)
+  })
+  
+  features <- SelectIntegrationFeatures(object.list = obj_list)
+  
+  obj_list <- lapply(X = obj_list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+  })
+  
+  anchors <- FindIntegrationAnchors(object.list = obj_list, reference = ref_datasets,
+    k.anchor = k.anchor, anchor.features = features, reduction = "rpca")
+  integrated <- IntegrateData(anchorset = anchors, k.weight=k.weight)
+  DefaultAssay(integrated) <- "integrated"
+  integrated <- ScaleData(integrated) %>% RunPCA(.)
+  return(integrated)
+  
+}
+
+process_log <- function(obj, nfeats, batch) {
+  if (inherits(obj, "list")) {
+    obj <- obj[[1]]
+  }
+  
+  DefaultAssay(obj) <- "RNA"
+  
+  NormalizeData(obj) %>%
+    FindVariableFeatures(., selection.method = "vst", nfeatures = nfeats) %>%
+    ScaleData(., vars.to.regress=batch) %>%
+    RunPCA(.)
+}
+
+process_glm <- function(obj, nfeats, batch) {
+  if (inherits(obj, "list")) {
+    obj <- obj[[1]]
+  }
+  
+  SCTransform(obj, method = "glmGamPoi", batch_var=batch, variable.features.n = nfeats) %>%
+    RunPCA(.)
+}
+
+process_qpoisson <- function(obj, nfeats, batch) {
+  if (inherits(obj, "list")) {
+    obj <- obj[[1]]
+  }
+  
+  SCTransform(obj, method = "qpoisson", variable.features.n = nfeats, vars.to.regress = batch) %>%
+    RunPCA(.)
+}
+
+cluster_obj <- function(obj, dims, return_model, res) {
+  obj %>%
+    RunUMAP(., dims = seq(dims), return.model=return_model) %>%
+    FindNeighbors(., dims = seq(dims)) %>%
+    FindClusters(., resolution = res)
+}
 
 
+#' Run gene expression qc to remove outlier cells
+#'
+#' @title
+#' @param obj seurat object
+#' @param times numeric, number of tests that must fail for a cell to be removed
+#' @param batch character, indicates metadata column to split calculation of outlier on
+#' @return
+#' @author dylanmr
+#' @export
+run_gex_qc <- function(obj, times, batch) {
+  
+  # convert to single cell experiment
+  ds <- as.SingleCellExperiment(obj)
+  ds <- scuttle::addPerCellQC(ds, percent_top=c(20,50,100,200))
+  
+  # calculate qc columns
+  ds$total_features <- ds$detected
+  ds$log10_total_features <- log10(ds$detected)
+  ds$total_counts <- ds$sum
+  ds$log10_total_counts <- log10(ds$sum+1)
+  ds$featcount_ratio <- ds$log10_total_counts/ds$log10_total_features
+  ds$featcount_dist <- getFeatCountDist(ds)
+  ds$pct_counts_top_20_features <- colData(ds)[[intersect(c("percent_top_20","pct_counts_in_top_20_features","percent.top_20"), colnames(colData(ds)))[[1]]]]
+  ds$pct_counts_top_50_features <- colData(ds)[[intersect(c("percent_top_50","pct_counts_in_top_50_features","percent.top_50"), colnames(colData(ds)))[[1]]]]
+  
+  # build matrix to track qc
+  discard <- matrix(c(scuttle::isOutlier(ds$log10_total_counts, nmads = 5, type = "lower", batch = ds[[batch]]) , 
+                      scuttle::isOutlier(ds$log10_total_counts,nmads = 2.5,type = "higher", batch = ds[[batch]]) ,
+                      scuttle::isOutlier(ds$log10_total_features,nmads = 5,type = "lower", batch = ds[[batch]]) , 
+                      scuttle::isOutlier(ds$log10_total_features, nmads = 2.5,type = "higher", batch = ds[[batch]]) ,
+                      scuttle::isOutlier(ds$pct_counts_top_20_features, nmads = 5,type = "both", batch = ds[[batch]]) ,
+                      scuttle::isOutlier(ds$pct_counts_top_50_features, nmads = 5,type = "both", batch = ds[[batch]]),
+                      scuttle::isOutlier(ds$featcount_dist, nmads = 5,type = "both", batch = ds[[batch]]), 
+                      ds$HTO_mcl_margin < (mean(ds$HTO_mcl_margin) - sd(ds$HTO_mcl_margin)*3)),
+                    nrow = length(ds$log10_total_counts))
+
+  # filter cells
+  discard <- rowSums(discard)>=times
+  cells_to_keep <- colnames(ds)[!discard]
+  obj <- subset(obj, cells = cells_to_keep)
+
+}
+
+getFeatCountDist <- function(df, do.plot=FALSE, linear=TRUE){
+  if(is(df,"SingleCellExperiment")) df <- as.data.frame(colData(df))
+  if(linear){
+    mod <- lm(log10_total_features~log10_total_counts, data=df)
+    pred <- predict.lm(mod, newdata=data.frame(log10_total_counts=df$log10_total_counts))
+  }else{
+    mod <- loess(log10_total_features~log10_total_counts, data=df)
+    pred <- predict.loess(mod, newdata=data.frame(log10_total_counts=df$log10_total_counts))
+  }
+  df$diff <- df$log10_total_features - pred
+  if(do.plot){
+    library(ggplot2)
+    ggplot(df, aes(x=total_counts, y=total_features, colour=diff)) + 
+      geom_point() + geom_smooth(method = "loess", col="black")
+  }
+  df$diff
+}
+
+#' Remove doublets from seurat object
+#'
+#' @title
+#' @param obj seurat object
+#' @param k number of neighbors to search across for putative doublets
+#' @return seurat object
+#' @author dylanmr
+#' @export
+
+remove_doublets <- function(obj, k=30) {
+  
+  # Remove negative cells
+  obj <- subset(obj, subset = HTO_mcl_classification.global == "Negative", invert=T)
+  
+  # Collect Data for scDblFinder
+  dat <- GetAssayData(obj, slot = "data")
+  dat <- dat[rownames(dat) %in% obj@assays$RNA@var.features,]
+  doublets <- as.logical(ifelse(obj$HTO_mcl_classification.global == "Doublet", T, F))
+  res <- scDblFinder::recoverDoublets(dat, doublets=doublets, samples=table(obj$hash.mcl.ID), k=k)
+  print(paste(sum(res$predicted),"intra-sample doublets detected"))
+  
+  # Remove all doublets
+  obj <- subset(obj, cells = Cells(obj)[which(res$predicted==T)], invert=T)
+  obj <- subset(obj, subset= HTO_mcl_classification.global == "Singlet")
+  
+  return(obj)
+  
+}
+
+#' generate xenium seurat objects
+#' @title
+#' @param path path to xenium files
+#' @param min_umi minimum number of probes in a cell
+#' @return
+#' @author dylanmr
+#' @export
+gen_xenium <- function(path, min_umi = 10) {
+
+  obj <- LoadXenium(path, fov="fov")
+  pattern <- "__(R.*?)__"
+  obj[["section"]] <- str_match_all(path, pattern)[[1]][,2]
+  pattern <- "__(00.*?)__"
+  obj[["slide"]] <- str_match_all(path, pattern)[[1]][,2]
+  obj <- subset(obj, subset = nCount_Xenium > min_umi)
+  return(obj)
+
+}
+
+#' Map campbell reference data
+#' 
+#' hardcoded to combine both agrp populations into a single annotation
+#' 
+#' @title
+#' @param obj seurat object
+#' @param dims number of dimensions for reference mapping
+#' @param column_name metadata column to contain mapped information
+#' @param ref campbell seurat object
+#' @param dims
+#' @return
+#' @author dylanmr
+#' @export
+
+map_ref <- function(obj = obj, dims = 30,
+                    ref = ref, 
+                    column_name = "final_labels") {
+  
+  set.seed(0426)
+  ref_sub <- subset(ref, cells = sample(Cells(ref), 20000))
+  ref_sub$stablecamp7 <- ifelse(grepl("Agrp",ref_sub$stablecamp7), "Agrp", ref_sub$stablecamp7)
+  anchors <- FindTransferAnchors(reference = ref_sub, query = obj, dims = seq(dims), reference.reduction = "pca")
+  predictions <- TransferData(anchorset = anchors, refdata = ref_sub$stablecamp7, dims = seq(dims))
+  obj[[column_name]] <- predictions$predicted.id
+  obj[["prediction.score.max"]] <- predictions$prediction.score.max
+  return(obj)
+  
+}
+
+#' prepare martin myers sc data
+
+#' @title
+#' @param path path to data
+#' @param min.features filter cells based on the minimum number of features
+#' @param min.cells filter genes based on the minimum number of cells in which they are identified
+#' @param name identity to include in seurat object
+#' @returns returns a processed seurat object
+#' @author dylanmr
+
+prep_myers <- function(path, min.features, min.cells, name = "leprgfp") {
+  
+  obj <- Read10X(here::here(path), gene.column = 1, strip.suffix = T)
+  colnames(obj) <- stri_sub(stri_sub(colnames(obj),to =  -2), 2)
+  meta <- read.csv(here::here(path, "metadata.csv.gz"), row.names = "ID")
+  obj <- CreateSeuratObject(obj, min.features = min.features, min.cells = min.cells, project = name, meta.data = meta)
+  obj <- subset(obj, subset = Cluster_region == "HY")
+  obj <- subset(obj, subset = Lepr_cluster %in% c("L10.GABA","L8.Nts"), invert=T)
+  clustokeep <- obj$Lepr_cluster[grep("^L", obj$Lepr_cluster)] %>% unique()
+  obj <- subset(obj, subset = Lepr_cluster %in% clustokeep)
+  obj <- process_seurat(obj, method="log", res=0.8, dims=30)
+  return(obj)
+  
+}
 

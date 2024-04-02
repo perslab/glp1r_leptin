@@ -34,5 +34,6 @@ options(clustermq.scheduler = "multicore",
 
 list(
   seurat_processing,
-  integrate_objects
+  integrate_objects,
+  analyze_lepip
   )

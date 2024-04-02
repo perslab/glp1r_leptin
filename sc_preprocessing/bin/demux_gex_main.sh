@@ -30,13 +30,13 @@ fi
 
 # Set paths based on SEQ_NAME
 FASTQ_DIR="/projects/perslab/people/lhv464/data/sc-10x/data-mkfastq/200123_SCOP-37/${SEQ_NAME}"
-OUTPATH="/projects/perslab/people/lhv464/leptin_paper/sc_preprocessing"
+OUTPATH="/projects/perslab/people/lhv464/glp1r_leptin/sc_preprocessing"
 BCL_DIR="/projects/perslab/people/lhv464/data/bcl/200123_SCOP-37"
 FLOWCELL_DIR=$(ls -d ${BCL_DIR}/* | grep "$SEQ_NAME")
 SAMPLE_SHEET_PATH="${OUTPATH}/sample_sheets/${SEQ_NAME}_samplesheet.csv"
 
 # Define the path to the specific version of Cell Ranger
-CELLRANGER_PATH="/projects/perslab/people/lhv464/leptin_paper/sc_preprocessing/cellranger-7.0.1"
+CELLRANGER_PATH="/projects/perslab/people/lhv464/glp1r_leptin/sc_preprocessing/cellranger-7.0.1"
 # Define the Conda environment name
 CONDA_ENV_NAME="kbpython_update"
 

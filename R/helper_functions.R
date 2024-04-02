@@ -23,13 +23,9 @@ create_loom <- function(obj, filepath, subset_value, subset_column) {
   if(!is.null(subset_value)) {
     obj <- filter_cells_by_column(obj, subset_column, subset_value)
   }
-  
-  if(!is.null(obj[["integrated"]])) {
-    obj[["integrated"]] <- NULL
-  }
-  
+    
   DefaultAssay(obj) <- "RNA"
-  loom_ma <- SeuratDisk::as.loom(obj, filename = filepath, verbose = FALSE)
+  loom_ma <- SeuratDisk::as.loom(obj, filename = filepath, verbose = FALSE,  overwrite=TRUE)
   loom_ma$close_all()
   
 }
@@ -87,3 +83,76 @@ create_new_column_seurat <- function(obj, selected_columns = c("treatment", "tim
   return(obj)
   
 }
+
+#' Predict the sex of an animal by hash-tag
+#'
+#' @title
+#' @param x seurat object
+#' @param assay character, indicate assay from object to use to calculate expression
+#' @param features character, vector of genes to calculate average expression
+#' @return
+#' @author dylanmr
+#' @export
+RunSexPrediction <- function(x, features = c("Xist","Tsix"), assay= "SCT") {
+
+  sex_genes <- AverageExpression(x, features = features, assays = assay, group.by = "hash.mcl.ID")$RNA
+  x@meta.data <- full_join(x@meta.data, enframe(factor(Mclust(colMeans(sex_genes),G=2)$classification), 
+                                                name = "hash.mcl.ID", value="sex_predicted"), by=c("hash.mcl.ID"))
+  rownames(x@meta.data) <- colnames(x)
+  return(x)
+
+}
+
+#' Wrapper to subset cells 
+#' easier to pass to a function
+#' allows use of regex
+
+#' @title
+#' @param input seurat object
+#' @param column_name column to filter
+#' @param values character vector in regex format to match
+#' @param invert logical if true keep match, if false keep non-match
+#' @return
+#' @author dylanmr
+#' @export
+#'
+
+filter_cells_by_column <- function(input, column_name, values, invert = FALSE) {
+  
+  if (!is.vector(values) || is.null(values)) {
+    stop("The 'values' parameter should be a non-null vector.")
+  }
+  
+  if (inherits(input, "Seurat")) {
+    seurat_list <- list(input)
+  } else if (is.list(input) && all(sapply(input, inherits, "Seurat"))) {
+    seurat_list <- input
+  } else {
+    stop("Input must be a Seurat object or a list of Seurat objects.")
+  }
+  
+  filtered_objects <- lapply(seurat_list, function(s) {
+    # Get cells that match any of the desired values in the specified column
+    if (invert) {
+      cells_to_keep <- !s@meta.data[[column_name]] %in% values
+    } else {
+      cells_to_keep <- s@meta.data[[column_name]] %in% values
+    }
+    
+    # Subset the Seurat object to keep only the desired cells
+    s_subset <- subset(s, cells = colnames(s)[cells_to_keep])
+    
+    return(s_subset)
+  })
+  
+  # Check the length of the list and return appropriately
+  if (length(filtered_objects) == 1) {
+    return(filtered_objects[[1]])
+  } else {
+    return(filtered_objects)
+  }
+  
+  return(filtered_objects)
+  
+}
+
