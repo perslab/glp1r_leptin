@@ -484,17 +484,33 @@ gen_xenium <- function(path, min_umi = 10) {
 #' @export
 
 map_ref <- function(obj = obj, dims = 30,
-                    ref = ref, 
+                    ref = ref, ref_labels = "stablecamp7",
                     column_name = "final_labels") {
   
-  set.seed(0426)
-  ref_sub <- subset(ref, cells = sample(Cells(ref), 20000))
-  ref_sub$stablecamp7 <- ifelse(grepl("Agrp",ref_sub$stablecamp7), "Agrp", ref_sub$stablecamp7)
-  anchors <- FindTransferAnchors(reference = ref_sub, query = obj, dims = seq(dims), reference.reduction = "pca")
-  predictions <- TransferData(anchorset = anchors, refdata = ref_sub$stablecamp7, dims = seq(dims))
+  anchors <- FindTransferAnchors(reference = ref, query = obj, dims = seq(dims), reference.reduction = "pca")
+  predictions <- TransferData(anchorset = anchors, refdata = ref[[ref_labels]][,1], dims = seq(dims))
   obj[[column_name]] <- predictions$predicted.id
   obj[["prediction.score.max"]] <- predictions$prediction.score.max
   return(obj)
+  
+}
+
+#' .. content for \description{} (no empty lines) ..
+#'
+#' .. content for \details{} ..
+#'
+#' @title
+#' @param nameme1
+#' @return
+#' @author dylanmr
+#' @export
+
+prepCamp <- function(method) {
+  
+  camp <- scRNAseq::CampbellBrainData()
+  seur <- process_seurat(camp, method = method, cluster=F, type="sce")
+  seur <- AddMetaData(seur, metadata = data.frame(colData(camp)))
+  return(seur)
   
 }
 
@@ -522,4 +538,24 @@ prep_myers <- function(path, min.features, min.cells, name = "leprgfp") {
   return(obj)
   
 }
+
+#' prepare in house labeling for annotation
+
+#' @title
+#' @param path path to data
+#' @param min.features filter cells based on the minimum number of features
+#' @param min.cells filter genes based on the minimum number of cells in which they are identified
+#' @param name identity to include in seurat object
+#' @returns returns a processed seurat object
+#' @author dylanmr
+
+prep_internal_lab_transfer <- function(path = "external_data/20231027_ARC_filtered.qs", ncells = 20000) {
+  
+  ref <- qs::qread(here::here(path))
+  ref_sub <- subset(ref, cells = sample(Cells(ref), ncells))
+  ref_sub$stablecamp7 <- ifelse(grepl("Agrp",ref_sub$stablecamp7), "Agrp", ref_sub$stablecamp7)
+  return(ref_sub)
+  
+}
+
 

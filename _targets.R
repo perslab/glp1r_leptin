@@ -1,8 +1,10 @@
 source("prep_seurat.R")
 source("integrate_objects.R")
+source("analyze_diets.R")
 source("analyze_lepip.R")
 source("analyze_agrpko.R")
 source("analyze_xenium.R")
+source("analyze_glp1rfl.R")
 
 tar_option_set(
   packages = c("tidyverse", "Seurat", "miloR"), # packages that your targets need to run
@@ -35,5 +37,8 @@ options(clustermq.scheduler = "multicore",
 list(
   seurat_processing,
   integrate_objects,
-  analyze_lepip
+  analyze_lepip,
+  analyze_diet,
+  knockout_glp1,
+  knockout_agrp
   )

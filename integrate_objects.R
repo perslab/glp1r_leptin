@@ -78,7 +78,7 @@ integrate_objects <-
     ),
     tar_target(
       campbell_scrna,
-      qs::qread(here::here("external_data/20231027_ARC_filtered.qs"))
+      prep_internal_lab_transfer(path = "external_data/20231027_ARC_filtered.qs", ncells = 20000)
     ),
     tar_target(
       myers_scrna,

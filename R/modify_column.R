@@ -8,6 +8,6 @@
 #' @author dylanmr
 #' @export
 modify_column <- function(obj, column_to_update, original, update) {
-  obj[[column_to_update]] <- ifelse(obj[[column_to_update]][,1] == original, update, obj[[column_to_update]][,1])
+  obj[[column_to_update]] <- ifelse(obj[[column_to_update]][,1] %in% original, update, obj[[column_to_update]][,1])
   return(obj)
 }

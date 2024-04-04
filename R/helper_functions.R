@@ -156,3 +156,38 @@ filter_cells_by_column <- function(input, column_name, values, invert = FALSE) {
   
 }
 
+#' project a query dataset into the reference embedding space of a second dataset
+#' @title
+#' @param ref reference dataset in the form of a seurat object. required to have run return_umap=T when processing the dataset
+#' @param query query dataset in the form of a seurat object
+#' @param label_to_transfer name of column in the reference object containing cluster identities
+#' @param dims number of dimensions to use for label transfer
+#' @param assay assay to use for integration
+#' @return
+#' @author dylanmr
+#' @export
+project_umap <- function(ref, query, label_to_transfer="predicted.id", dims=30, reference.assay = reference.assay, query.assay = query.assay) {
+  
+  anchors <- FindTransferAnchors(reference = ref, query = query, reference.assay = reference.assay, query.assay = query.assay, 
+                                 dims = seq(dims), reference.reduction = "pca")
+  
+  query <- MapQuery(anchorset = anchors, reference = ref, query = query,
+                    refdata = list(celltype = label_to_transfer), reference.reduction = "pca", reduction.model = "umap")
+  
+  return(query)
+  
+}
+
+#' modify a seurat column
+#'
+#' .. content for \details{} ..
+#'
+#' @title
+
+#' @return
+#' @author dylanmr
+#' @export
+modify_column <- function(obj, column_to_update, original, update) {
+  obj[[column_to_update]] <- ifelse(obj[[column_to_update]][,1] %in% original, update, obj[[column_to_update]][,1])
+  return(obj)
+}

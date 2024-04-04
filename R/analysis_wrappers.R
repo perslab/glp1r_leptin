@@ -16,28 +16,31 @@ edger_prep <- function(seur, trt_group = "geno", lib.size = 1e4,
   DefaultAssay(seur) <- "RNA"
   
   # Subset cells based on metadata column and filter features
-  cells_to_keep <- colnames(seur)[grepl(paste0("^",celltypes, "$"), seur[[celltype_column]][,1])]
-  print(length(cells_to_keep))
-  features_to_keep <- rownames(seur@assays[[assay_name]])[!grepl(feature_pattern_exclude, rownames(seur@assays[[assay_name]]))]
-  seur <- subset(seur, cells = cells_to_keep, features = features_to_keep)
+  if(!is.null(celltype_column)){
+    cells_to_keep <- colnames(seur)[grepl(paste0("^",celltypes, "$"), seur[[celltype_column]][,1])]
+    features_to_keep <- rownames(seur@assays[[assay_name]])[!grepl(feature_pattern_exclude, rownames(seur@assays[[assay_name]]))]
+    seur <- subset(seur, cells = cells_to_keep, features = features_to_keep)
+  } else {
+    features_to_keep <- rownames(seur@assays[[assay_name]])[!grepl(feature_pattern_exclude, rownames(seur@assays[[assay_name]]))]
+    seur <- subset(seur, features = features_to_keep)
+  }
   
   if(!is.null(dataset)){
     cells_to_keep <- colnames(seur)[grepl(paste0("^",dataset, "$"), seur[["dataset"]][,1])]
-    print(length(cells_to_keep))
     seur <- subset(seur, cells = cells_to_keep)
   }
   
   if(!is.null(filter_column)){
     cells_to_keep <- colnames(seur)[grepl(paste0("^",filter_value, "$"), seur[[filter_column]][,1])]
-    print(length(cells_to_keep))
     seur <- subset(seur, cells = cells_to_keep)
   }
   
-  y <- Seurat2PB(seur, sample = "hash.mcl.ID", cluster= trt_group)
+  y <- Seurat2PB(seur, sample = "hash.mcl.ID", cluster = trt_group)
   keep.samples <- y$samples$lib.size > lib.size
   y <- y[, keep.samples]
   meta <- seur[[]] %>% distinct(hash.mcl.ID, .keep_all = T) 
   meta <- meta[match(y$samples$sample, meta$hash.mcl.ID),]
+  y$samples$group <- NULL
   y$samples <- bind_cols(meta, y$samples)
   
   keep.genes <- filterByExpr(y, group=y$samples$cluster, min.count = min.count, min.total.count = min.total.count)
@@ -64,15 +67,12 @@ edger_prep <- function(seur, trt_group = "geno", lib.size = 1e4,
 #' @export
 run_scdist <- function(obj, fixed.effects = "geno", assay="SCT", 
                             ident_column = "predicted.celltype", 
-                            subset_cells = celltypes, 
                             random.effects = c("hash.mcl.ID", "orig.ident","sex_predicted","time", "treatment"),
                             d=20,
                             nfeats=5000) {
 
   DefaultAssay(obj) <- "RNA"
   obj <- process_seurat(obj, method = "qpoisson", cluster=F, nfeats = nfeats)
-  cells <- colnames(obj)[grep(paste("^",subset_cells, "$",collapse="|", sep = ""), obj[[ident_column]][,1])]
-  obj <- subset(obj, cells=cells)
   mat <- GetAssayData(obj, slot="scale.data", assay=assay) %>%  as.matrix()
   scd_res <- scDist(mat, meta.data=obj@meta.data, min.counts.per.cell = 5,
          fixed.effects = fixed.effects, 
